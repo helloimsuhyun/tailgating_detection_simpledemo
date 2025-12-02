@@ -158,7 +158,7 @@ def update_state(result,roi_in,roi_out,frame):
             track_state_change_time[id_] = frame_idx
         else :
             last_change = track_state_change_time.get(id_, None)
-            if (last_change is not None and last_change > 150) and current_zone == "OUTSIDE" :
+            if (last_change is not None and frame_idx - last_change > 150) and current_zone == "OUTSIDE" :
                 state = "None"
 
         #state, zone, last_seen frame idx 업데이트
