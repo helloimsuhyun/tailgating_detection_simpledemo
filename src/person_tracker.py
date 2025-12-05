@@ -5,7 +5,7 @@ import os
 import numpy as np
 from datetime import datetime
 
-# ----------------- 황일겸과 통신  -----------------
+# ----------------- 개미과 통신  -----------------
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +27,7 @@ app.add_middleware(
 )
 
 # ----------------------
-#   WebSocket Frame Queue
+#   WebSocket Frame Queue(by gpt)
 # ----------------------q
 frame_queue = asyncio.Queue(maxsize=1)   # 최신 프레임만 유지
 
@@ -81,6 +81,8 @@ def start_stream_server(host="0.0.0.0", port=5000):
     th = threading.Thread(target=_run, daemon=True)
     th.start()
     print(f"[STREAM] WebSocket server running ws://{host}:{port}/ws/video")
+
+# ----------------------fastAPI http 통신
 
 
 def frame_to_base64(frame):
@@ -171,7 +173,7 @@ def add_door_log(id, final_state, frame):
         print("[ERROR] Failed to encode frame")
         frame_b64 = None
 
-    if final_state == "DOOR_EXIT" : 
+    if final_state in ["DOOR_EXIT","DOOR IN"] : 
 
         log = {
             "id": int(id),
@@ -193,7 +195,6 @@ def add_door_log(id, final_state, frame):
 ROI_OUTER = None
 ROI_INNER = None
 ROI_DONT_CARE = None
-
 
 
 #zone_table
@@ -281,17 +282,17 @@ def update_state(result,roi_in,roi_out,roi_dontcare,frame):
         
         
         if prev_zone is not None and prev_zone != current_zone : #zone이 변화한 경우 상태전이
-            #들어오는 방향
+            #룸 밖쪽으로 나감
             if prev_zone == "OUTER_ROI" and current_zone == "INNER_ROI":
-                state = "ENTER_DEEP"
-            elif prev_zone == "OUTSIDE" and current_zone == "OUTER_ROI"  :
-                state = "ENTER"
-            
-            #나가는 방향
-            elif prev_zone == "INNER_ROI" and current_zone == "OUTER_ROI"  :
-                state = "EXIT"
-            elif prev_zone == "INNER_ROI" and current_zone == "OUTSIDE"  :
                 state = "EXIT_DEEP"
+            elif prev_zone == "OUTSIDE" and current_zone == "OUTER_ROI"  :
+                state = "EXIT"
+            
+            #룸 안으로 들어옴
+            elif prev_zone == "INNER_ROI" and current_zone == "OUTER_ROI"  :
+                state = "ENTER"
+            elif prev_zone == "OUTER_ROI" and current_zone == "OUTSIDE"  :
+                state = "ENTER_DEEP"
             
             track_snap_shot[id_] = frame
             track_state_change_time[id_] = frame_idx
@@ -299,7 +300,7 @@ def update_state(result,roi_in,roi_out,roi_dontcare,frame):
             last_change = track_state_change_time.get(id_, None)
             if (last_change is not None and frame_idx - last_change > 150) and current_zone == "OUTSIDE" :
                 state = "NONE"
-
+        
         #state, zone, last_seen frame idx 업데이트
         track_states[id_] = state
         track_current_zone[id_] = current_zone 
@@ -342,32 +343,47 @@ def handle_lost_state(frame_idx,seen_id):
                 last_zone = track_prev_zone.get(id_,None)
                 first_zone = track_first_zone.get(id_, None)
 
-                final_state = decide_final_state(last_zone,last_state,first_zone)
+                final_state = decide_final_state(first_zone,last_zone,last_state)
                 final_snap_shot = track_snap_shot.get(id_,None)
 
                 print(f"[LOST] id={id_}, first={first_zone}, last_zone={last_zone}, last_state={last_state}, final={final_state}")
                 add_door_log(id_,final_state,final_snap_shot)
                 to_del.append(id_)
+        else : #보이는 id들 DOOR IN 체크
+            last_state = track_states.get(id_,None)
+            last_zone = track_prev_zone.get(id_,None)
+            first_zone = track_first_zone.get(id_, None)
+
+            final_state = decide_is_he_door_in(first_zone,last_zone,last_state)
+            if (final_state is not None) : 
+                final_snap_shot = track_snap_shot.get(id_,None)
+                add_door_log(id_,final_state,final_snap_shot)
+
+                to_del.append(id_) #door in 판정나면 추적 한번 끊어줌
+
     
     for id_ in to_del :
         track_current_zone.pop(id_, None)
         track_prev_zone.pop(id_, None)
         track_last_seen.pop(id_, None)
-        track_first_zone.pop(id_,None)
+        track_first_zone.pop(id_, None)
         track_states.pop(id_, None)
         track_state_change_time.pop(id_, None)
+        track_snap_shot.pop(id_, None)
 
-def decide_is_he_door_in(last_zone, last_state, first_zone):
-    if (first_zone == "INNER_ROI" or first_zone == "OUTER_ROI") and last_zone == "OUTSIDE" and (last_state == "EXIT" or last_state == "EXIT_DEEP"): 
+def decide_is_he_door_in(first_zone, last_zone, last_state):
+    if (first_zone == "INNER_ROI" or first_zone == "OUTER_ROI") and last_zone == "OUTSIDE" and (last_state == "ENTER" or last_state == "ENTER_DEEP"): 
         return "DOOR IN"
     
-def decide_final_state(last_zone, last_state, first_zone): # 프레임에서 사라진 id_들을 care, 1. 문 밖에서 안으로 IN 한 경우 2.CCTV 영역 밖으로 벗어난 경우
+    else : return None
+    
+def decide_final_state(first_zone, last_zone, last_state): # 프레임에서 사라진 id_들을 care, 1. 문 밖에서 안으로 IN 한 경우 2.CCTV 영역 밖으로 벗어난 경우
     
     if first_zone != "INNER_ROI" : #first zone 이 out outer roi 중에 하나면서
         if last_zone == "INNER_ROI" : 
             return "DOOR_EXIT"
         if last_zone == "OUTER_ROI" : 
-            if last_state == "ENTER":
+            if last_state == "EXIT":
                 return "DOOR_EXIT"   
         
     if last_zone == "OUTSIDE" and (last_state == None or last_state == "NONE"): 
@@ -513,8 +529,6 @@ def setup_rois(first_frame):
                 break
 
     cv2.destroyWindow("Set ROI")
-
-
 
 
 if __name__ == "__main__":
