@@ -97,7 +97,7 @@ def send_door_event(log):
     try:
         r = requests.post(SERVER_URL, json=log, timeout=0.5)  # 타임아웃 짧게
         # 필요하면 응답 체크
-        print(r.status_code, r.text)
+        #print(r.status_code, r.text)
     except Exception as e:
         print("[ERROR] send_door_event:", e)
 
