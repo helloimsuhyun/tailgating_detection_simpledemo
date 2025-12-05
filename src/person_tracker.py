@@ -3,6 +3,7 @@ import pyrealsense2 as rs
 import cv2
 import os
 import numpy as np
+from datetime import datetime
 
 # ----------------- 경로 설정 -----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,11 +56,32 @@ def tracker_step(model):
 track_states = {} # ENTER , ENTER_DEEP ,IN, OUT, LOST , NONE
 track_last_seen = {}
 track_state_change_time = {} 
+track_snap_shot = {} # 상태변이때의 snapshot
+
 
 
 track_first_zone = {} #처음 id가 보인 zone
 track_current_zone = {} #현재 zone
 track_prev_zone = {} #이전 frame에서의 zone
+
+door_log = []
+
+def add_door_log(id, final_state, frame):
+
+    if final_state == "DOOR_EXIT" : 
+
+        log = {
+            "id": id,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "event": final_state,
+            "frame": frame.copy()
+        }
+
+        print(f"[DOOR] ID:{log['id']} | Time:{log['timestamp']} | Event:{log['event']}")
+        cv2.imshow("Door Event", log["frame"])
+        cv2.waitKey(1)
+
+        door_log.append(log)
 
 
 # roi 변수(초기값)
@@ -113,7 +135,7 @@ def get_zone(cx,cy,roi_in, roi_out):
 # ----------------- state machine -----------------
 
 def update_state(result,roi_in,roi_out,frame):
-    global track_current_zone, track_last_seen, track_first_zone ,track_states
+    global track_current_zone, track_last_seen, track_first_zone ,track_states , track_state_change_time, track_prev_zone
     global frame_idx
 
     boxes = result.boxes
@@ -144,7 +166,7 @@ def update_state(result,roi_in,roi_out,frame):
         
         if prev_zone is not None and prev_zone != current_zone : #zone이 변화한 경우 상태전이
             #들어오는 방향
-            if prev_zone == "OUTER_ROI" and current_zone == "INNER_ROI" :
+            if prev_zone == "OUTER_ROI" and current_zone == "INNER_ROI":
                 state = "ENTER_DEEP"
             elif prev_zone == "OUTSIDE" and current_zone == "OUTER_ROI"  :
                 state = "ENTER"
@@ -154,12 +176,13 @@ def update_state(result,roi_in,roi_out,frame):
                 state = "EXIT"
             elif prev_zone == "INNER_ROI" and current_zone == "OUTSIDE"  :
                 state = "EXIT_DEEP"
-
+            
+            track_snap_shot[id_] = frame
             track_state_change_time[id_] = frame_idx
         else :
             last_change = track_state_change_time.get(id_, None)
             if (last_change is not None and frame_idx - last_change > 150) and current_zone == "OUTSIDE" :
-                state = "None"
+                state = "NONE"
 
         #state, zone, last_seen frame idx 업데이트
         track_states[id_] = state
@@ -181,7 +204,7 @@ def update_state(result,roi_in,roi_out,frame):
 
         cv2.circle(frame, (int(cx), int(cy)), 5, (0, 0, 255), -1)
 
-
+    
     handle_lost_state(frame_idx,seen_id)
     return frame
 
@@ -190,42 +213,50 @@ def handle_lost_state(frame_idx,seen_id):
     frame_idx : 이번 프레임의 인덱스
     seen_id : 이번 프레임에서 보인 id들의 배열
     """
-    global track_current_zone, track_last_seen, track_first_zone, track_states
-
+    global track_current_zone, track_last_seen, track_first_zone, track_states,track_prev_zone
+    
     to_del = []
 
     for id_ in list(track_current_zone.keys()): #현재 추적중인 id들을 불러옴
-        if id_ not in seen_id :
+        if id_ not in seen_id : #현재 프레임에서 안보이는 녀석들
             last_seen = track_last_seen.get(id_,None)
 
             if last_seen is not None and (frame_idx - last_seen > FRAME_LOST_THRESH): #이렇게 되면 LOST임
                 last_state = track_states.get(id_,None)
                 last_zone = track_prev_zone.get(id_,None)
-                final_state = decide_final_state(last_zone,last_state)
-                track_states[id_] = final_state
+                first_zone = track_first_zone.get(id_, None)
+
+                final_state = decide_final_state(last_zone,last_state,first_zone)
+                final_snap_shot = track_snap_shot.get(id_,None)
+                add_door_log(id_,final_state,final_snap_shot)
                 to_del.append(id_)
     
     for id_ in to_del :
         track_current_zone.pop(id_, None)
         track_prev_zone.pop(id_, None)
         track_last_seen.pop(id_, None)
+        track_first_zone.pop(id_,None)
+        track_states.pop(id_, None)
+        track_state_change_time.pop(id_, None)
 
-
-def decide_final_state(last_zone, last_state):
-    if last_zone == "INNER_ROI":
-        return "IN"
-    if last_zone == "OUTSIDE":
-        return "OUT"
-
-    if last_zone == "OUTER_ROI":
-        if last_state == "ENTER_DEEP":
-            return "IN"
-        elif last_state == "EXIT_DEEP":
-            return "OUT"
-        else:
-            return "UNKNOWN"
+def decide_is_he_door_in(last_zone, last_state, first_zone):
+    if (first_zone == "INNER_ROI" or first_zone == "OUTER_ROI") and last_zone == "OUTSIDE" and (last_state == "EXIT" or last_state == "EXIT_DEEP"): 
+        return "DOOR IN"
+    
+def decide_final_state(last_zone, last_state, first_zone): # 프레임에서 사라진 id_들을 care, 1. 문 밖에서 안으로 IN 한 경우 2.CCTV 영역 밖으로 벗어난 경우
+    
+    if first_zone != "INNER_ROI" : #first zone 이 out outer roi 중에 하나면서
+        if last_zone == "INNER_ROI" : 
+            return "DOOR_EXIT"
+        if last_zone == "OUTER_ROI" : 
+            if last_state == "ENTER":
+                return "DOOR_EXIT"   
+        
+    if last_zone == "OUTSIDE" and (last_state == None or last_state == "NONE"): 
+        return "OUT OF CCTV RANGE"
 
     return "UNKNOWN"
+
 
 # ----------------- set roi by mouse (by gpt) -----------------
 # ----------------- ROI 마우스 선택 -----------------
