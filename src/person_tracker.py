@@ -5,6 +5,29 @@ import os
 import numpy as np
 from datetime import datetime
 
+# ----------------- 황일겸과 통신  -----------------
+
+import base64
+import requests
+
+
+def frame_to_base64(frame):
+    ret, buf = cv2.imencode('.jpg', frame)   # numpy → jpeg bytes
+    if not ret:
+        return None
+    return base64.b64encode(buf).decode()    # bytes → base64 문자열
+
+SERVER_URL = "http://localhost:8000/door_event"  # 너 서버 주소로 변경
+
+def send_door_event(log):
+    try:
+        r = requests.post(SERVER_URL, json=log, timeout=0.5)  # 타임아웃 짧게
+        # 필요하면 응답 체크
+        # print(r.status_code, r.text)
+    except Exception as e:
+        print("[ERROR] send_door_event:", e)
+
+
 # ----------------- 경로 설정 -----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 YAML_PATH = os.path.join(BASE_DIR, "track_yaml", "botsort.yaml")
@@ -74,14 +97,16 @@ def add_door_log(id, final_state, frame):
             "id": id,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "event": final_state,
-            "frame": frame.copy()
+            "frame": frame_to_base64(frame)
         }
 
-        print(f"[DOOR] ID:{log['id']} | Time:{log['timestamp']} | Event:{log['event']}")
-        cv2.imshow("Door Event", log["frame"])
+        cv2.imshow("Door Event", frame)
         cv2.waitKey(1)
 
         door_log.append(log)
+        print(f"[DOOR] ID:{log['id']} | Time:{log['timestamp']} | Event:{log['event']}")
+
+        send_door_event(log)
 
 
 # roi 변수(초기값)
@@ -118,14 +143,22 @@ def get_zone(cx,cy,roi_in, roi_out ,roi_dontcare):
         in_doncare = cv2.pointPolygonTest(roi_dontcare.astype(np.float32),
                                         (float(cx), float(cy)),
                                         False) >= 0
-        if in_doncare : return None
+        if in_inner:
+            zone = "INNER_ROI"
+        elif in_doncare:
+            return None
+        elif in_outer :
+            zone = "OUTER_ROI"
+        else:
+            zone = "OUTSIDE"
 
-    if in_inner:
-        zone = "INNER_ROI"
-    elif in_outer:
-        zone = "OUTER_ROI"
-    else:
-        zone = "OUTSIDE"
+    else :
+        if in_inner:
+            zone = "INNER_ROI"
+        elif in_outer:
+            zone = "OUTER_ROI"
+        else:
+            zone = "OUTSIDE"
 
     return zone
 
@@ -231,6 +264,8 @@ def handle_lost_state(frame_idx,seen_id):
 
                 final_state = decide_final_state(last_zone,last_state,first_zone)
                 final_snap_shot = track_snap_shot.get(id_,None)
+
+                print(f"[LOST] id={id_}, first={first_zone}, last_zone={last_zone}, last_state={last_state}, final={final_state}")
                 add_door_log(id_,final_state,final_snap_shot)
                 to_del.append(id_)
     
