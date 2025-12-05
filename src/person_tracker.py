@@ -85,19 +85,10 @@ def add_door_log(id, final_state, frame):
 
 
 # roi 변수(초기값)
-ROI_OUTER = np.array([
-    [379, 163],  # 왼쪽 위
-    [442, 155],  # 오른쪽 위
-    [430, 362],  # 왼쪽 아래
-    [370, 334],  # 오른쪽 아래
-], dtype=np.float32)
+ROI_OUTER = None
+ROI_INNER = None
+ROI_DONT_CARE = None
 
-ROI_INNER = np.array([
-    [379, 163],  # 왼쪽 위
-    [442, 155],  # 오른쪽 위
-    [430, 362],  # 왼쪽 아래
-    [370, 334],  # 오른쪽 아래
-], dtype=np.float32)
 
 
 #zone_table
@@ -112,7 +103,7 @@ frame_idx = 0
 FRAME_LOST_THRESH = 30 #이거 이상 안보이면 사라진 것으로 처리
 
 # ----------------- judge zone function -----------------
-def get_zone(cx,cy,roi_in, roi_out):
+def get_zone(cx,cy,roi_in, roi_out ,roi_dontcare):
 
     in_inner = cv2.pointPolygonTest(roi_in.astype(np.float32),
                                 (float(cx), float(cy)),
@@ -122,6 +113,12 @@ def get_zone(cx,cy,roi_in, roi_out):
     in_outer = cv2.pointPolygonTest(roi_out.astype(np.float32),
                                     (float(cx), float(cy)),
                                     False) >= 0
+    
+    if roi_dontcare is not None : 
+        in_doncare = cv2.pointPolygonTest(roi_dontcare.astype(np.float32),
+                                        (float(cx), float(cy)),
+                                        False) >= 0
+        if in_doncare : return None
 
     if in_inner:
         zone = "INNER_ROI"
@@ -134,7 +131,7 @@ def get_zone(cx,cy,roi_in, roi_out):
 
 # ----------------- state machine -----------------
 
-def update_state(result,roi_in,roi_out,frame):
+def update_state(result,roi_in,roi_out,roi_dontcare,frame):
     global track_current_zone, track_last_seen, track_first_zone ,track_states , track_state_change_time, track_prev_zone
     global frame_idx
 
@@ -150,13 +147,19 @@ def update_state(result,roi_in,roi_out,frame):
     seen_id = []
 
     for id_, box in zip(ids, xyxy): #현재 프레임에서 보이는 ID들에 대한 처리
-        seen_id.append(id_)
+        
         x1, y1, x2, y2 = box
         cx = (x1 + x2) / 2.0
         cy = y2
         #cy = (y1 + y2) / 2.0
 
-        current_zone = get_zone(cx,cy,roi_in,roi_out)
+        current_zone = get_zone(cx,cy,roi_in,roi_out,roi_dontcare)
+
+        if current_zone is None: #roi_doncare에 해당되면 본 것으로 처리하지 않음 그냥 안본 것으로 처리
+            continue
+
+        seen_id.append(id_)
+            
         prev_zone = track_current_zone.get(id_, None)
         state = track_states.get(id_,None)
 
@@ -272,58 +275,48 @@ def _mouse_callback(event, x, y, flags, param):
             _tmp_points.append((x, y))
             print(f"[{_current_roi_name}] point {_tmp_points}")
 
-
 def setup_rois(first_frame):
     """
-    첫 프레임에서 OUTER_ROI, INNER_ROI를 마우스로 4점씩 선택
-    왼쪽 클릭으로 점 선택, r로 리셋, Enter/Space로 확정
+    첫 프레임에서 INNER_ROI, OUTER_ROI, DONT_CARE_ROI를
+    마우스로 4점씩 선택
+    순서: INNER(안) -> OUTER(밖) -> DONT_CARE
+    왼쪽 클릭: 점 선택, r: 리셋, Enter/Space: 확정
     """
-    global ROI_OUTER, ROI_INNER, _current_roi_name, _tmp_points
+    global ROI_OUTER, ROI_INNER, ROI_DONT_CARE, _current_roi_name, _tmp_points
 
     cv2.namedWindow("Set ROI")
     cv2.setMouseCallback("Set ROI", _mouse_callback)
 
     frame_for_draw = first_frame.copy()
 
-    # 1) OUTER_ROI 선택
-    _current_roi_name = "OUTER"
-    _tmp_points = []
+    # 이미 확정된 ROI들을 항상 같이 그려주는 헬퍼
+    def draw_fixed_rois(img):
+        # INNER: 초록
+        if ROI_INNER is not None and len(ROI_INNER) == 4:
+            cv2.polylines(img, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 2)
+        # OUTER: 파랑
+        if ROI_OUTER is not None and len(ROI_OUTER) == 4:
+            cv2.polylines(img, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0), 2)
+        # DONT_CARE: 노랑
+        if ROI_DONT_CARE is not None and len(ROI_DONT_CARE) == 4:
+            cv2.polylines(img, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 2)
 
-    while True:
-        disp = frame_for_draw.copy()
-        cv2.putText(disp, "OUTER ROI: 4 point, r=reset, ENTER = end",
-                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
-
-        # 이미 찍은 점들 그리기
-        for p in _tmp_points:
-            cv2.circle(disp, p, 4, (255, 0, 0), -1)
-        if len(_tmp_points) >= 2:
-            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (255,0,0), 2)
-
-        cv2.imshow("Set ROI", disp)
-        key = cv2.waitKey(20) & 0xFF
-
-        if key == ord('r'):   # reset
-            _tmp_points = []
-        elif key in [13, 32]:  # ENTER 또는 SPACE
-            if len(_tmp_points) == 4:
-                ROI_OUTER = np.array(_tmp_points, dtype=np.float32)
-                print("OUTER_ROI set to:", ROI_OUTER)
-                break
-
-    # 2) INNER_ROI 선택
+    # ---------------- 1) INNER_ROI 선택 (안) ----------------
     _current_roi_name = "INNER"
     _tmp_points = []
 
     while True:
         disp = frame_for_draw.copy()
-        cv2.putText(disp, "INNER ROI: 4 point, r=reset, ENTER= end",
-                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
+        draw_fixed_rois(disp)
 
+        cv2.putText(disp, "INNER ROI (inside): 4 points, r=reset, ENTER=done",
+                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+
+        # 현재 찍는 점들
         for p in _tmp_points:
             cv2.circle(disp, p, 4, (0, 255, 0), -1)
         if len(_tmp_points) >= 2:
-            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (0,255,0), 2)
+            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (0, 255, 0), 2)
 
         cv2.imshow("Set ROI", disp)
         key = cv2.waitKey(20) & 0xFF
@@ -336,7 +329,76 @@ def setup_rois(first_frame):
                 print("INNER_ROI set to:", ROI_INNER)
                 break
 
+    # ---------------- 2) OUTER_ROI 선택 (밖) ----------------
+    _current_roi_name = "OUTER"
+    _tmp_points = []
+
+    while True:
+        disp = frame_for_draw.copy()
+        draw_fixed_rois(disp)
+
+        cv2.putText(disp, "OUTER ROI (outside): 4 points, r=reset, ENTER=done",
+                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
+
+        for p in _tmp_points:
+            cv2.circle(disp, p, 4, (255, 0, 0), -1)
+        if len(_tmp_points) >= 2:
+            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (255, 0, 0), 2)
+
+        cv2.imshow("Set ROI", disp)
+        key = cv2.waitKey(20) & 0xFF
+
+        if key == ord('r'):
+            _tmp_points = []
+        elif key in [13, 32]:
+            if len(_tmp_points) == 4:
+                ROI_OUTER = np.array(_tmp_points, dtype=np.float32)
+                print("OUTER_ROI set to:", ROI_OUTER)
+                break
+
+       # ---------------- 3) DONT_CARE_ROI 선택 ----------------
+    _current_roi_name = "DONT_CARE"
+    _tmp_points = []
+
+    while True:
+        disp = frame_for_draw.copy()
+        draw_fixed_rois(disp)
+
+        cv2.putText(
+            disp,
+            "DONT_CARE ROI: 4 points, r=reset, ENTER=done, n=skip",
+            (10, 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        for p in _tmp_points:
+            cv2.circle(disp, p, 4, (0, 255, 255), -1)
+        if len(_tmp_points) >= 2:
+            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (0, 255, 255), 2)
+
+        cv2.imshow("Set ROI", disp)
+        key = cv2.waitKey(20) & 0xFF
+
+        if key == ord('r'):
+            _tmp_points = []
+
+        elif key == ord('n'):   # 👉 DONT_CARE 안 쓰고 스킵
+            ROI_DONT_CARE = None
+            print("DONT_CARE_ROI skipped")
+            break
+
+        elif key in [13, 32]:   # ENTER or SPACE
+            if len(_tmp_points) == 4:
+                ROI_DONT_CARE = np.array(_tmp_points, dtype=np.float32)
+                print("DONT_CARE_ROI set to:", ROI_DONT_CARE)
+                break
+
     cv2.destroyWindow("Set ROI")
+
 
 
 
@@ -354,11 +416,17 @@ if __name__ == "__main__":
                 continue
 
             annotated = result.plot()
-            annotated = update_state(result, ROI_INNER, ROI_OUTER, annotated)
+            annotated = update_state(result, ROI_INNER, ROI_OUTER, ROI_DONT_CARE, annotated)
 
             # ROI 시각화 (선택)
-            cv2.polylines(annotated, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0), 2)
-            cv2.polylines(annotated, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 2)
+            if ROI_OUTER is not None:
+                cv2.polylines(annotated, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0), 2)
+
+            if ROI_INNER is not None:
+                cv2.polylines(annotated, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 2)
+
+            if ROI_DONT_CARE is not None:
+                cv2.polylines(annotated, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 2)  
 
             cv2.imshow("RealSense YOLO Tracking Test", annotated)
 
