@@ -12,8 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import threading
 import asyncio
-import cv2
-import numpy as np
 import base64
 import requests
 
@@ -30,7 +28,7 @@ app.add_middleware(
 
 # ----------------------
 #   WebSocket Frame Queue
-# ----------------------
+# ----------------------q
 frame_queue = asyncio.Queue(maxsize=1)   # 최신 프레임만 유지
 
 
@@ -91,13 +89,13 @@ def frame_to_base64(frame):
         return None
     return base64.b64encode(buf).decode()    # bytes → base64 문자열
 
-SERVER_URL = "http://172.17.75.184:8000/door_event"
+SERVER_URL = "http://172.17.68.34:8000/door_event"
 
 def send_door_event(log):
     try:
         r = requests.post(SERVER_URL, json=log, timeout=0.5)  # 타임아웃 짧게
         # 필요하면 응답 체크
-        # print(r.status_code, r.text)
+        print(r.status_code, r.text)
     except Exception as e:
         print("[ERROR] send_door_event:", e)
 
@@ -165,13 +163,21 @@ door_log = []
 
 def add_door_log(id, final_state, frame):
 
+    if frame is None : 
+        return 
+    
+    frame_b64 = frame_to_base64(frame)
+    if not frame_b64:
+        print("[ERROR] Failed to encode frame")
+        frame_b64 = None
+
     if final_state == "DOOR_EXIT" : 
 
         log = {
-            "id": id,
+            "id": int(id),
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "event": final_state,
-            "frame": frame_to_base64(frame)
+            "frame": frame_b64
         }
 
         cv2.imshow("Door Event", frame)
@@ -402,13 +408,13 @@ def setup_rois(first_frame):
     def draw_fixed_rois(img):
         # INNER: 초록
         if ROI_INNER is not None and len(ROI_INNER) == 4:
-            cv2.polylines(img, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 2)
+            cv2.polylines(img, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 1)
         # OUTER: 파랑
         if ROI_OUTER is not None and len(ROI_OUTER) == 4:
-            cv2.polylines(img, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0), 2)
+            cv2.polylines(img, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0), 1)
         # DONT_CARE: 노랑
         if ROI_DONT_CARE is not None and len(ROI_DONT_CARE) == 4:
-            cv2.polylines(img, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 2)
+            cv2.polylines(img, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 1)
 
     # ---------------- 1) INNER_ROI 선택 (안) ----------------
     _current_roi_name = "INNER"
@@ -425,7 +431,7 @@ def setup_rois(first_frame):
         for p in _tmp_points:
             cv2.circle(disp, p, 4, (0, 255, 0), -1)
         if len(_tmp_points) >= 2:
-            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (0, 255, 0), 2)
+            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (0, 255, 0), 1)
 
         cv2.imshow("Set ROI", disp)
         key = cv2.waitKey(20) & 0xFF
@@ -452,7 +458,7 @@ def setup_rois(first_frame):
         for p in _tmp_points:
             cv2.circle(disp, p, 4, (255, 0, 0), -1)
         if len(_tmp_points) >= 2:
-            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (255, 0, 0), 2)
+            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (255, 0, 0), 1)
 
         cv2.imshow("Set ROI", disp)
         key = cv2.waitKey(20) & 0xFF
@@ -487,7 +493,7 @@ def setup_rois(first_frame):
         for p in _tmp_points:
             cv2.circle(disp, p, 4, (0, 255, 255), -1)
         if len(_tmp_points) >= 2:
-            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (0, 255, 255), 2)
+            cv2.polylines(disp, [np.array(_tmp_points, np.int32)], False, (0, 255, 255), 1)
 
         cv2.imshow("Set ROI", disp)
         key = cv2.waitKey(20) & 0xFF
@@ -534,13 +540,13 @@ if __name__ == "__main__":
 
             # ROI 시각화 (선택)
             if ROI_OUTER is not None:
-                cv2.polylines(annotated, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0), 2)
+                cv2.polylines(annotated, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0),1)
 
             if ROI_INNER is not None:
-                cv2.polylines(annotated, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 2)
+                cv2.polylines(annotated, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 1)
 
             if ROI_DONT_CARE is not None:
-                cv2.polylines(annotated, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 2) 
+                cv2.polylines(annotated, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 1) 
 
             update_stream_frame(annotated)
             cv2.imshow("RealSense YOLO Tracking Test", annotated)
