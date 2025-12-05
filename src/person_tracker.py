@@ -7,8 +7,82 @@ from datetime import datetime
 
 # ----------------- 황일겸과 통신  -----------------
 
+from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import threading
+import asyncio
+import cv2
+import numpy as np
 import base64
 import requests
+
+app = FastAPI()
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ----------------------
+#   WebSocket Frame Queue
+# ----------------------
+frame_queue = asyncio.Queue(maxsize=1)   # 최신 프레임만 유지
+
+
+async def send_frames(websocket: WebSocket):
+    """비동기적으로 queue에서 프레임 읽어 WebSocket으로 전송"""
+    while True:
+        jpg_bytes = await frame_queue.get()
+        await websocket.send_bytes(jpg_bytes)
+
+
+@app.websocket("/ws/video")
+async def video_ws(websocket: WebSocket):
+    await websocket.accept()
+    print("📡 Client connected")
+
+    try:
+        await send_frames(websocket)
+    except Exception as e:
+        print("⚠️ WebSocket disconnected:", e)
+    finally:
+        await websocket.close()
+
+
+def update_stream_frame(frame):
+    """YOLO 루프에서 호출 — JPEG 변환 → queue에 넣음"""
+
+    ret, buffer = cv2.imencode(".jpg", frame)
+    if not ret:
+        return
+    jpg_bytes = buffer.tobytes()
+
+    # queue 최신화 (이전 프레임 버림)
+    try:
+        while not frame_queue.empty():
+            frame_queue.get_nowait()
+    except:
+        pass
+
+    # 최신 프레임 저장
+    try:
+        frame_queue.put_nowait(jpg_bytes)
+    except asyncio.QueueFull:
+        pass
+
+
+def start_stream_server(host="0.0.0.0", port=5000):
+    def _run():
+        uvicorn.run(app, host=host, port=port, log_level="info")
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    print(f"[STREAM] WebSocket server running ws://{host}:{port}/ws/video")
 
 
 def frame_to_base64(frame):
@@ -17,7 +91,7 @@ def frame_to_base64(frame):
         return None
     return base64.b64encode(buf).decode()    # bytes → base64 문자열
 
-SERVER_URL = "http://localhost:8000/door_event"  # 너 서버 주소로 변경
+SERVER_URL = "http://172.17.75.184:8000/door_event"
 
 def send_door_event(log):
     try:
@@ -440,6 +514,11 @@ def setup_rois(first_frame):
 if __name__ == "__main__":
     realsense_start()
     frame = realsense_cam()
+
+    if frame is not None : 
+        update_stream_frame(frame)
+
+    start_stream_server(host="0.0.0.0", port=5000)
     setup_rois(frame)
 
     try:
@@ -461,8 +540,9 @@ if __name__ == "__main__":
                 cv2.polylines(annotated, [ROI_INNER.astype(np.int32)], True, (0, 255, 0), 2)
 
             if ROI_DONT_CARE is not None:
-                cv2.polylines(annotated, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 2)  
+                cv2.polylines(annotated, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 2) 
 
+            update_stream_frame(annotated)
             cv2.imshow("RealSense YOLO Tracking Test", annotated)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
