@@ -1,1 +1,1 @@
-# 🚪 Tailgating Detection – Simple Demo for capston design 1
+🚪 Tailgating Detection – Simple Demo for capston design 1
