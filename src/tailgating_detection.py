@@ -296,7 +296,7 @@ def update_state(result,roi_in,roi_out,roi_dontcare,frame):
             
             track_snap_shot[id_] = frame
             track_state_change_time[id_] = frame_idx
-        else :
+        else : #zone이 변화하지 않은 경우에, 마지막 zone 변화로부터 일정 이상 시간이 지났고, 현재 존이 outside인 경우 state를 NONE으로 초기화
             last_change = track_state_change_time.get(id_, None)
             if (last_change is not None and frame_idx - last_change > 150) and current_zone == "OUTSIDE" :
                 state = "NONE"
@@ -347,7 +347,7 @@ def handle_lost_state(frame_idx,seen_id):
                 final_snap_shot = track_snap_shot.get(id_,None)
 
                 print(f"[LOST] id={id_}, first={first_zone}, last_zone={last_zone}, last_state={last_state}, final={final_state}")
-                add_door_log(id_,final_state,final_snap_shot)
+                add_door_log(id_,final_state,final_snap_shot) # ---------------------------------------send log door out
                 to_del.append(id_)
         else : #보이는 id들 DOOR IN 체크
             last_state = track_states.get(id_,None)
@@ -357,7 +357,7 @@ def handle_lost_state(frame_idx,seen_id):
             final_state = decide_is_he_door_in(first_zone,last_zone,last_state)
             if (final_state is not None) : 
                 final_snap_shot = track_snap_shot.get(id_,None)
-                add_door_log(id_,final_state,final_snap_shot)
+                add_door_log(id_,final_state,final_snap_shot) # ---------------------------------------send log door in
 
                 to_del.append(id_) #door in 판정나면 추적 한번 끊어줌
 
