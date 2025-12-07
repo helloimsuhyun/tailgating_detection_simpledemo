@@ -7,6 +7,8 @@ from dt_apriltags import Detector
 """
 
 apriltag를 사용해서 호모그라피 행렬을 찾는 것으로 결정. 찾아본 결과 aruco 마커보다 apriltage가 aruco마커보다 탐지에 rubust하다고 함
+파이썬 바인딩을 사용 pip install dt-apriltags
+
 
 """
 
@@ -60,7 +62,7 @@ def draw_axes(vis_img, R, t, camera_intr, axis_len=0.05):
 
     fx, fy, cx, cy = camera_intr
 
-    # tag 좌표계에서 축점들
+    # tag local 좌표계 축점, 각 colums들이 좌표
     axes_points = np.array([
         [0, 0, 0],                 # origin
         [axis_len, 0, 0],          # x+
@@ -81,10 +83,10 @@ def draw_axes(vis_img, R, t, camera_intr, axis_len=0.05):
 
     origin, x_axis, y_axis, z_axis = uv
 
-    # 축 그리기
-    cv2.line(vis_img, origin, x_axis, (0, 0, 255), 2)   # X축 (RED)
-    cv2.line(vis_img, origin, y_axis, (0, 255, 0), 2)   # Y축 (GREEN)
-    cv2.line(vis_img, origin, z_axis, (255, 0, 0), 2)   # Z축 (BLUE)
+    # 시각화
+    cv2.line(vis_img, origin, x_axis, (0, 0, 255), 2)   # X축 (R)
+    cv2.line(vis_img, origin, y_axis, (0, 255, 0), 2)   # Y축 (GR)
+    cv2.line(vis_img, origin, z_axis, (255, 0, 0), 2)   # Z축 (B)
 
     return vis_img
 
@@ -102,10 +104,10 @@ def detect_apriltag():
         cv2.putText(
             vis_frame,
             "Press 'k' : detect tag   |   Press 'q' : quit",
-            (10, 30),  # 화면 왼쪽 위 위치
+            (10, 30),  
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
-            (0, 255, 255),  # 노란색
+            (0, 255, 255), 
             2
         )
 
@@ -135,7 +137,7 @@ def detect_apriltag():
                 R = tag.pose_R  # 3x3
                 t = tag.pose_t  # 3x1
 
-                # 감지 태그 시각화
+                #감지된 태그 시각화
                 for idx in range(len(tag.corners)):
                     cv2.line(vis_img, tuple(tag.corners[idx-1, :].astype(int)), tuple(tag.corners[idx, :].astype(int)), (0, 255, 0))                
                 cv2.circle(vis_img, (cx, cy), 4, (0, 0, 255), -1)
