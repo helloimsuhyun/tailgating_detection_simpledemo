@@ -40,7 +40,7 @@ def realsense_end():
 
 
 # ----------------- apriltag -----------------
-TAG_SIZE = 0.10 #m 단위
+TAG_SIZE = 0.065 #m 단위
 
 at_detector = Detector(
     searchpath=['apriltags'],
@@ -93,9 +93,10 @@ def draw_axes(vis_img, R, t, camera_intr, axis_len=0.05):
 def detect_apriltag():
     global camera_intr
 
+    detection = None 
+
     while True : 
         frame = realsense_cam()
-        detections = None 
         if frame is None : 
             print("camera open failed ...")
             continue
@@ -126,9 +127,8 @@ def detect_apriltag():
                 camera_params = camera_intr,
                 tag_size=TAG_SIZE
             )
-            detections = tags
+            detection = tags
  
-
             for tag in tags:
                 corners = tag.corners.astype(int)
                 cx, cy = tag.center
@@ -157,18 +157,129 @@ def detect_apriltag():
             cv2.imshow("detect of teg",vis_img)
         
         if key == ord('q'):
-            return detections
+            cv2.destroyAllWindows()
+            return detection
         
+def make_homograhpy(R,t):
+    global camera_intr
+    fx, fy, cx, cy = camera_intr
+    K = np.array([
+        [fx, 0,  cx],
+        [0,  fy, cy],
+        [0,  0,  1]
+    ])
 
-            
-        
+    # s[u v 1] #image cordinate = K [R1 R2 R3 t] [ X Y Z 1] 인데 Z가 0 
+
+    Rt_plane = np.column_stack([R[:, 0:2], t.reshape(3, 1)])  # 3x3 (X,Y,1)
+    H = K @ Rt_plane
+
+    #정규화
+    H = H / H[2, 2]
+    return H
+
+def world_to_img(X,Y,H):
+    XY1 = np.array([X, Y, 1.0])
+    uv1 = H @ XY1
+    u = uv1[0] / uv1[2]
+    v = uv1[1] / uv1[2]
+    return int(u), int(v)
+
+def run_world_input_visualization(H):
+    """
+    H: 평면(X,Y,1) -> 이미지(u,v,1) homography
+
+    동작:
+      - 평소에는 실시간 스트림
+      - 'e' 누르면 터미널에서 X Y (m) 입력 → 그 좌표에 점 + 좌표 텍스트를 계속 오버레이
+      - 다시 'e' 누르고 다른 X Y 입력하면 점 위치 업데이트
+      - 'q' 누르면 종료
+    """
+    print("[world->image 시각화 모드]")
+    print("  - 실시간 스트림 보다가 'e' 누르면 X Y (m) 입력 모드")
+    print("  - 예: 0.1 0.0")
+    print("  - 'q' : 종료")
+
+    current_coord = None  # (X, Y) in meters
+
+    while True:
+        frame = realsense_cam()
+        if frame is None:
+            print("camera frame is None")
+            continue
+
+        vis = frame.copy()
+
+        # 현재 좌표가 있으면 점 + 텍스트 오버레이
+        if current_coord is not None:
+            X, Y = current_coord
+            u, v = world_to_img(X, Y, H)
+
+            # 점
+            cv2.circle(vis, (u, v), 6, (0, 0, 255), -1)
+
+            # 텍스트
+            text = f"{X:.3f}, {Y:.3f} m"
+            cv2.putText(
+                vis,
+                text,
+                (u + 10, v - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2
+            )
+
+        cv2.putText(
+            vis,
+            "Press 'e' to set (X,Y) in meters, 'q' to quit",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2
+        )
+
+        cv2.imshow("world_to_image", vis)
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord('q'):
+            print("quit visualization")
+            break
+
+        if key == ord('e'):
+            # --- 여기서만 잠깐 터미널 입력 모드로 진입 ---
+            raw = input("X Y (meter 단위, 예: 0.1 0.0) 입력 (취소: 엔터만): ").strip()
+            if raw == "":
+                print("입력 취소")
+                continue
+
+            try:
+                xs, ys = raw.split()
+                X = float(xs)
+                Y = float(ys)
+                current_coord = (X, Y)
+                print(f"[SET] world=({X:.3f}, {Y:.3f}) m")
+            except Exception as e:
+                print("입력 형식 오류. 예: 0.1 0.0   (에러:", e, ")")
+                continue
+
 
 if __name__ == "__main__":
     camera_intr = realsense_start()
     frame = realsense_cam()
     
     try:
-        detect_apriltag()
+        dt = detect_apriltag()
+        if dt is not None : print(dt[0].pose_R)
+        
+        if dt is not None and len(dt) == 1:
+            tag = dt[0]
+            R = tag.pose_R
+            t = tag.pose_t
+            H = make_homograhpy(R,t)
+
+            run_world_input_visualization(H)
         
     finally :
         realsense_end()
