@@ -1,7 +1,9 @@
 import cv2
 import numpy as np
 import pyrealsense2 as rs
+import os
 from dt_apriltags import Detector
+from ultralytics import YOLO
 
 
 """
@@ -40,7 +42,7 @@ def realsense_end():
 
 
 # ----------------- apriltag -----------------
-TAG_SIZE = 0.065 #m 단위
+TAG_SIZE = 0.1 #m 단위 
 
 at_detector = Detector(
     searchpath=['apriltags'],
@@ -152,7 +154,7 @@ def detect_apriltag():
                     2
                 )
 
-                vis_img = draw_axes(vis_img, R, t, camera_intr, axis_len=TAG_SIZE * 0.7)
+                vis_img = draw_axes(vis_img, R, t, camera_intr, axis_len=TAG_SIZE * 0.5)
 
             cv2.imshow("detect of teg",vis_img)
         
@@ -185,105 +187,234 @@ def world_to_img(X,Y,H):
     v = uv1[1] / uv1[2]
     return int(u), int(v)
 
-def run_world_input_visualization(H):
+def img_to_world(u, v, H): # 역호모그래피
+    uv1 = np.array([u, v, 1.0])
+    H_inv = np.linalg.inv(H)       
+    XY1 = H_inv @ uv1
+
+    X = XY1[0] / XY1[2]
+    Y = XY1[1] / XY1[2]
+    return X, Y  
+
+# -----------  yolo
+model = YOLO("yolo11s.pt")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+YAML_PATH = os.path.join(BASE_DIR, "track_yaml", "botsort.yaml")
+
+def tracker_step(model):
+    frame = realsense_cam()
+    if frame is None:
+        return None, None
+
+    results = model.track(
+        source=frame,
+        tracker=YAML_PATH,
+        conf=0.55,
+        iou=0.5,
+        classes=[64],
+        persist=True, #track state 유지
+        stream=False,    
+        verbose=False, #log 제외
+    )
+    result = results[0]
+    return frame, result
+
+track_xy = {} 
+
+def update_track(result,frame):
+    global track_xy
+
+    if result is None or result.boxes is None:
+        track_xy = {}
+        return frame
+    
+    boxes = result.boxes
+
+    if boxes.id is None: #화면에 아무도 잡히지 않은 경우
+        track_xy = {}
+        return frame
+
+    ids = boxes.id.cpu().numpy().astype(int)
+    xyxy = boxes.xyxy.cpu().numpy()
+    current_tracks = {}
+
+    for id_, box in zip(ids, xyxy): #현재 프레임에서 보이는 ID들에 대한 처리
+        
+        x1, y1, x2, y2 = box
+        cx = (x1 + x2) / 2.0
+        cy = y2
+        current_tracks[id_] = (cx, cy)
+    track_xy = current_tracks
+
+    return frame
+
+# -----------  vis by gpt
+MAP_SIZE = 600             # 맵 그림 사이즈 (픽셀)
+MAP_SCALE = 200.0          # 1m당 몇 픽셀로 볼지 (원하는대로 조절)
+MAP_ORIGIN = (MAP_SIZE//2, MAP_SIZE//2)  # (0,0) world를 맵 중앙에 둘 거임
+
+def world_to_map_pixel(X, Y):
     """
-    H: 평면(X,Y,1) -> 이미지(u,v,1) homography
-
-    동작:
-      - 평소에는 실시간 스트림
-      - 'e' 누르면 터미널에서 X Y (m) 입력 → 그 좌표에 점 + 좌표 텍스트를 계속 오버레이
-      - 다시 'e' 누르고 다른 X Y 입력하면 점 위치 업데이트
-      - 'q' 누르면 종료
+    world 좌표계 (X,Y)를 2D 맵 이미지(px) 좌표로 변환
+    맵 중앙이 (0,0) world, X 오른쪽 +, Y 위쪽 + 로 가정
     """
-    print("[world->image 시각화 모드]")
-    print("  - 실시간 스트림 보다가 'e' 누르면 X Y (m) 입력 모드")
-    print("  - 예: 0.1 0.0")
-    print("  - 'q' : 종료")
+    ox, oy = MAP_ORIGIN
 
-    current_coord = None  # (X, Y) in meters
+    # X: 오른쪽이 +, Y: 위쪽이 +가 되도록 (이미지 y는 아래가 +라서 -Y)
+    mx = int(ox + X * MAP_SCALE)
+    my = int(oy - Y * MAP_SCALE)
 
-    while True:
-        frame = realsense_cam()
-        if frame is None:
-            print("camera frame is None")
-            continue
+    return mx, my
 
-        vis = frame.copy()
+def draw_grid(map_img, grid_step_m=0.005):
+    """
+    map_img    : 2D 맵 이미지 (H x W x 3)
+    grid_step_m: 격자 간격 (미터 단위, 예: 0.5m, 1.0m)
+    """
+    h, w = map_img.shape[:2]
+    ox, oy = MAP_ORIGIN
 
-        # 현재 좌표가 있으면 점 + 텍스트 오버레이
-        if current_coord is not None:
-            X, Y = current_coord
-            u, v = world_to_img(X, Y, H)
+    # 1칸(격자)당 픽셀 수
+    step_px = int(MAP_SCALE * grid_step_m)
+    if step_px <= 0:
+        return map_img
 
-            # 점
-            cv2.circle(vis, (u, v), 6, (0, 0, 255), -1)
+    # 연한 회색 격자
+    grid_color = (220, 220, 220)
 
-            # 텍스트
-            text = f"{X:.3f}, {Y:.3f} m"
+    # --- 수직선 (X 방향 격자) ---
+    # origin에서 오른쪽으로
+    x = ox
+    while x < w:
+        cv2.line(map_img, (x, 0), (x, h - 1), grid_color, 1)
+        x += step_px
+
+    # origin에서 왼쪽으로
+    x = ox
+    while x >= 0:
+        cv2.line(map_img, (x, 0), (x, h - 1), grid_color, 1)
+        x -= step_px
+
+    # --- 수평선 (Y 방향 격자) ---
+    # origin에서 아래쪽으로
+    y = oy
+    while y < h:
+        cv2.line(map_img, (0, y), (w - 1, y), grid_color, 1)
+        y += step_px
+
+    # origin에서 위쪽으로
+    y = oy
+    while y >= 0:
+        cv2.line(map_img, (0, y), (w - 1, y), grid_color, 1)
+        y -= step_px
+
+    # 중심 축은 조금 더 진하게 (X/Y axis)
+    cv2.line(map_img, (ox, 0), (ox, h - 1), (180, 180, 180), 2)  # Y축
+    cv2.line(map_img, (0, oy), (w - 1, oy), (180, 180, 180), 2)  # X축
+
+    return map_img
+
+
+def draw_2d_map(track_xy, H):
+    """
+    track_xy : {id: (u,v)}  이미지 좌표 (bottom center)
+    H       : world ↔ image 호모그래피
+    return  : 2D 맵 (np.ndarray)
+    """
+    # 흰색 바탕 맵 생성
+    map_img = np.ones((MAP_SIZE, MAP_SIZE, 3), dtype=np.uint8) * 255
+
+    # 🔹 격자 먼저 그리기
+    map_img = draw_grid(map_img, grid_step_m=1.0)  # 1m 간격 (원하면 0.5로 줄여도 됨)
+
+    # 중심점(0,0) 표시
+    cv2.circle(map_img, MAP_ORIGIN, 4, (0, 0, 0), -1)
+    cv2.putText(
+        map_img,
+        "(0,0)",
+        (MAP_ORIGIN[0] + 5, MAP_ORIGIN[1] - 5),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.4,
+        (0, 0, 0),
+        1
+    )
+
+    for id_, (u, v) in track_xy.items():
+        # 1) 이미지 좌표 → world 좌표 (m)
+        X, Y = img_to_world(u, v, H)
+
+        # 2) world 좌표 → 맵 픽셀 좌표
+        mx, my = world_to_map_pixel(X, Y)
+
+        if 0 <= mx < MAP_SIZE and 0 <= my < MAP_SIZE:
+            # 사람 위치 점
+            cv2.circle(map_img, (mx, my), 6, (0, 0, 255), -1)
+
+            # ID 텍스트
             cv2.putText(
-                vis,
-                text,
-                (u + 10, v - 10),
+                map_img,
+                f"ID:{id_}",
+                (mx + 8, my - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2
+                0.5,
+                (50, 50, 50),
+                1
             )
 
-        cv2.putText(
-            vis,
-            "Press 'e' to set (X,Y) in meters, 'q' to quit",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 255),
-            2
-        )
+            # 월드 좌표 텍스트
+            cv2.putText(
+                map_img,
+                f"({X:.2f}, {Y:.2f})",
+                (mx + 8, my + 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (100, 0, 0),
+                1
+            )
 
-        cv2.imshow("world_to_image", vis)
-        key = cv2.waitKey(1) & 0xFF
+    return map_img
 
-        if key == ord('q'):
-            print("quit visualization")
-            break
-
-        if key == ord('e'):
-            # --- 여기서만 잠깐 터미널 입력 모드로 진입 ---
-            raw = input("X Y (meter 단위, 예: 0.1 0.0) 입력 (취소: 엔터만): ").strip()
-            if raw == "":
-                print("입력 취소")
-                continue
-
-            try:
-                xs, ys = raw.split()
-                X = float(xs)
-                Y = float(ys)
-                current_coord = (X, Y)
-                print(f"[SET] world=({X:.3f}, {Y:.3f}) m")
-            except Exception as e:
-                print("입력 형식 오류. 예: 0.1 0.0   (에러:", e, ")")
-                continue
 
 
 if __name__ == "__main__":
+    # 1) 카메라 시작
     camera_intr = realsense_start()
-    frame = realsense_cam()
-    
-    try:
-        dt = detect_apriltag()
-        if dt is not None : print(dt[0].pose_R)
-        
-        if dt is not None and len(dt) == 1:
-            tag = dt[0]
-            R = tag.pose_R
-            t = tag.pose_t
-            H = make_homograhpy(R,t)
 
-            run_world_input_visualization(H)
-        
-    finally :
+    H = None  
+
+    try:
+        dt = detect_apriltag()   
+
+        if dt is None or len(dt) == 0:
+            print("tag fail")
+        else:
+            tag = dt[0]
+            R = tag.pose_R    # 3x3
+            t = tag.pose_t    # 3x1
+            H = make_homograhpy(R, t)
+            print("Homography H:\n", H)
+
+            while True:
+                frame, result = tracker_step(model)
+                annotated = result.plot()
+                if frame is None or result is None:
+                    continue
+
+                frame_vis = update_track(result, frame)
+                cv2.imshow("Tracking", annotated)
+
+                if H is not None and len(track_xy) > 0:
+                    map_img = draw_2d_map(track_xy, H)
+                    cv2.imshow("BEV Map", map_img)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+
+    finally:
         realsense_end()
         cv2.destroyAllWindows()
+
 
 
 
