@@ -42,7 +42,7 @@ def realsense_end():
 
 
 # ----------------- apriltag -----------------
-TAG_SIZE = 0.1 #m 단위 
+TAG_SIZE = 0.157 #m 단위 
 
 at_detector = Detector(
     searchpath=['apriltags'],
@@ -55,7 +55,7 @@ at_detector = Detector(
     debug=0
 )
 
-def draw_axes(vis_img, R, t, camera_intr, axis_len=0.05):
+def draw_axes(vis_img, R, t, camera_intr, axis_len=0.2):
     """
     AprilTag pose(R, t)를 이용해 x,y,z 축을 화면에 그려준다.
     axis_len: 축 길이 (미터)
@@ -211,7 +211,7 @@ def tracker_step(model):
         tracker=YAML_PATH,
         conf=0.55,
         iou=0.5,
-        classes=[64],
+        classes=[0],
         persist=True, #track state 유지
         stream=False,    
         verbose=False, #log 제외
@@ -266,7 +266,7 @@ def world_to_map_pixel(X, Y):
 
     return mx, my
 
-def draw_grid(map_img, grid_step_m=0.005):
+def draw_grid(map_img, grid_step_m=0.2):
     """
     map_img    : 2D 맵 이미지 (H x W x 3)
     grid_step_m: 격자 간격 (미터 단위, 예: 0.5m, 1.0m)
@@ -314,7 +314,6 @@ def draw_grid(map_img, grid_step_m=0.005):
 
     return map_img
 
-
 def draw_2d_map(track_xy, H):
     """
     track_xy : {id: (u,v)}  이미지 좌표 (bottom center)
@@ -325,7 +324,7 @@ def draw_2d_map(track_xy, H):
     map_img = np.ones((MAP_SIZE, MAP_SIZE, 3), dtype=np.uint8) * 255
 
     # 🔹 격자 먼저 그리기
-    map_img = draw_grid(map_img, grid_step_m=1.0)  # 1m 간격 (원하면 0.5로 줄여도 됨)
+    map_img = draw_grid(map_img, grid_step_m=0.2)  # 1m 간격 (원하면 0.5로 줄여도 됨)
 
     # 중심점(0,0) 표시
     cv2.circle(map_img, MAP_ORIGIN, 4, (0, 0, 0), -1)

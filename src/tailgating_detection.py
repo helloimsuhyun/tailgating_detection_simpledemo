@@ -91,7 +91,7 @@ def frame_to_base64(frame):
         return None
     return base64.b64encode(buf).decode()    # bytes → base64 문자열
 
-SERVER_URL = "http://172.17.68.34:8000/door_event"
+SERVER_URL = "http://172.17.67.93:8000/door_event"
 
 def send_door_event(log):
     try:
