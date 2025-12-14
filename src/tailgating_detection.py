@@ -9,11 +9,15 @@ from datetime import datetime
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketDisconnect
+
 import uvicorn
 import threading
 import asyncio
 import base64
 import requests
+import queue, time
+
 
 app = FastAPI()
 
@@ -29,14 +33,28 @@ app.add_middleware(
 # ----------------------
 #   WebSocket Frame Queue(by gpt)
 # ----------------------q
-frame_queue = asyncio.Queue(maxsize=1)   # 최신 프레임만 유지
+latest_frame_bytes = None
+latest_lock = threading.Lock()
 
 
 async def send_frames(websocket: WebSocket):
-    """비동기적으로 queue에서 프레임 읽어 WebSocket으로 전송"""
+    FPS = 12
+    period = 1.0 / FPS
+
     while True:
-        jpg_bytes = await frame_queue.get()
-        await websocket.send_bytes(jpg_bytes)
+        try:
+            await asyncio.sleep(period)
+
+            with latest_lock:
+                jpg = latest_frame_bytes
+
+            if jpg is None:
+                continue
+
+            await websocket.send_bytes(jpg)
+
+        except (WebSocketDisconnect, RuntimeError):
+            break
 
 
 @app.websocket("/ws/video")
@@ -46,32 +64,23 @@ async def video_ws(websocket: WebSocket):
 
     try:
         await send_frames(websocket)
+    except WebSocketDisconnect:
+        print("⚠️ WebSocket disconnected")
     except Exception as e:
-        print("⚠️ WebSocket disconnected:", e)
-    finally:
-        await websocket.close()
+        print("⚠️ WebSocket error:", e)
+
 
 
 def update_stream_frame(frame):
-    """YOLO 루프에서 호출 — JPEG 변환 → queue에 넣음"""
-
-    ret, buffer = cv2.imencode(".jpg", frame)
+    global latest_frame_bytes
+    ret, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
     if not ret:
         return
-    jpg_bytes = buffer.tobytes()
+    jpg = buffer.tobytes()
 
-    # queue 최신화 (이전 프레임 버림)
-    try:
-        while not frame_queue.empty():
-            frame_queue.get_nowait()
-    except:
-        pass
+    with latest_lock:
+        latest_frame_bytes = jpg
 
-    # 최신 프레임 저장
-    try:
-        frame_queue.put_nowait(jpg_bytes)
-    except asyncio.QueueFull:
-        pass
 
 
 def start_stream_server(host="0.0.0.0", port=5000):
@@ -83,6 +92,7 @@ def start_stream_server(host="0.0.0.0", port=5000):
     print(f"[STREAM] WebSocket server running ws://{host}:{port}/ws/video")
 
 # ----------------------fastAPI http 통신
+event_q = queue.Queue(maxsize=100)
 
 
 def frame_to_base64(frame):
@@ -91,15 +101,34 @@ def frame_to_base64(frame):
         return None
     return base64.b64encode(buf).decode()    # bytes → base64 문자열
 
-SERVER_URL = "http://172.17.67.93:8000/door_event"
+SERVER_URL = "http://172.17.71.40:8000/door_event"
 
 def send_door_event(log):
     try:
-        r = requests.post(SERVER_URL, json=log, timeout=0.5)  # 타임아웃 짧게
-        # 필요하면 응답 체크
-        #print(r.status_code, r.text)
-    except Exception as e:
-        print("[ERROR] send_door_event:", e)
+        event_q.put_nowait(log)
+    except queue.Full:
+        pass
+
+def event_sender_worker():
+    session = requests.Session()
+    while True:
+        log = event_q.get()
+        try:
+            r = session.post(
+                SERVER_URL,
+                json=log,
+                timeout=(1.0, 3.0)
+            )
+            print("[DOOR_EVENT]", r.status_code)
+            r.raise_for_status()
+        except Exception as e:
+            print("[ERROR] send_door_event:", e)
+        finally:
+            event_q.task_done()
+
+def start_event_sender():
+    th = threading.Thread(target=event_sender_worker, daemon=True)
+    th.start()
 
 
 # ----------------- 경로 설정 -----------------
@@ -173,7 +202,7 @@ def add_door_log(id, final_state, frame):
         print("[ERROR] Failed to encode frame")
         frame_b64 = None
 
-    if final_state in ["DOOR_EXIT","DOOR IN"] : 
+    if final_state in ["DOOR_EXIT","DOOR_IN"] : 
 
         log = {
             "id": int(id),
@@ -184,7 +213,7 @@ def add_door_log(id, final_state, frame):
 
         cv2.imshow("Door Event", frame)
         cv2.waitKey(1)
-
+        
         door_log.append(log)
         print(f"[DOOR] ID:{log['id']} | Time:{log['timestamp']} | Event:{log['event']}")
 
@@ -346,7 +375,7 @@ def handle_lost_state(frame_idx,seen_id):
                 final_state = decide_final_state(first_zone,last_zone,last_state)
                 final_snap_shot = track_snap_shot.get(id_,None)
 
-                print(f"[LOST] id={id_}, first={first_zone}, last_zone={last_zone}, last_state={last_state}, final={final_state}")
+                #print(f"[LOST] id={id_}, first={first_zone}, last_zone={last_zone}, last_state={last_state}, final={final_state}")
                 add_door_log(id_,final_state,final_snap_shot) # ---------------------------------------send log door out
                 to_del.append(id_)
         else : #보이는 id들 DOOR IN 체크
@@ -373,7 +402,7 @@ def handle_lost_state(frame_idx,seen_id):
 
 def decide_is_he_door_in(first_zone, last_zone, last_state):
     if (first_zone == "INNER_ROI" or first_zone == "OUTER_ROI") and last_zone == "OUTSIDE" and (last_state == "ENTER" or last_state == "ENTER_DEEP"): 
-        return "DOOR IN"
+        return "DOOR_IN"
     
     else : return None
     
@@ -540,6 +569,7 @@ if __name__ == "__main__":
 
     start_stream_server(host="0.0.0.0", port=5000)
     setup_rois(frame)
+    start_event_sender()
 
     try:
         while True:
@@ -553,6 +583,7 @@ if __name__ == "__main__":
             annotated = update_state(result, ROI_INNER, ROI_OUTER, ROI_DONT_CARE, annotated)
 
             # ROI 시각화 (선택)
+            """
             if ROI_OUTER is not None:
                 cv2.polylines(annotated, [ROI_OUTER.astype(np.int32)], True, (255, 0, 0),1)
 
@@ -561,7 +592,7 @@ if __name__ == "__main__":
 
             if ROI_DONT_CARE is not None:
                 cv2.polylines(annotated, [ROI_DONT_CARE.astype(np.int32)], True, (0, 255, 255), 1) 
-
+            """
             update_stream_frame(annotated)
             cv2.imshow("RealSense YOLO Tracking Test", annotated)
 
