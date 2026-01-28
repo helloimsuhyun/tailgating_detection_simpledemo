@@ -1,13 +1,49 @@
-🚪 CCTV Vision Module – Tailgating Detection Demo
+# 🚪 CCTV Vision Module – Tailgating Detection Demo
 
-Capstone Design 1
+본 데모는 **Tailgating Detection(동반 침입) 기능 검증을 위한 CCTV 비전 프로그램**이다.  
+**Capstone Design 1 – 지능형 CCTV & 로봇 보안 시스템**의 모듈로 제작되었다.
 
-본 데모는 Tailgating Detection 기능 검증을 위한 간단한 CCTV 비전 프로그램이다.
+---
 
-YOLO 기반 사람 검출과 다중 객체 추적을 이용해 출입문 주변의 In/Out 이벤트를 분석하고, 
-이를 출입 통제 로그와 비교하여 동반 침입(Tailgating) 가능 상황을 감지한다.
+## 🎥 Demo Videos
 
-본 시스템은 모듈 구조로 설계되어 GUI 연동이 가능하며, 
-향후 QR 기반 ID 추적, BEV 다중 카메라 융합, 보안 로직 확장이 가능하다.
+### ▶ Demo 1
+[![Tailgating Demo 1](https://img.youtube.com/vi/mCDZnSuZe34/0.jpg)](https://youtu.be/mCDZnSuZe34)
 
-본 데모는 향후 로봇 연동 보안 감시 시스템으로 확장하기 위한 기초 검증용 프로토타입이다.
+---
+
+## 🔍 시스템 개요
+
+- CCTV 영상 기반 **사람 검출**
+- **다중 객체 추적**을 통한 출입 흐름 분석
+- 출입문 영역 기준 **In / Out 이벤트 판별**
+- 출입 통제 로그 대비 **Tailgating(동반 침입) 상황 감지**
+
+---
+
+## 🧩 시스템 특징
+
+- **모듈 구조 설계**로 GUI 및 로봇 시스템 연동 가능
+- 실시간 CCTV 스트림 처리 기반
+- 보안 로직 확장을 고려한 구조
+
+향후 확장 가능 기능:
+- BEV 기반 다중 카메라 융합
+- 로봇 연동 보안 시나리오
+- 출입 인증 로직 고도화
+
+---
+
+## 🛠️ 기술 스택
+
+- **OpenCV**
+- **YOLO**
+- **BoT-SORT**
+- **FastAPI**
+
+---
+
+## 🎯 목적
+
+본 프로젝트는 향후 **로봇 연동 물리 보안 감시 시스템**으로 확장하기 위한 데모를 목표로 한다.
+
